@@ -1,25 +1,26 @@
-import { DescribeNetworkInterfacesCommand, EC2Client } from '@aws-sdk/client-ec2';
+import { DescribeNetworkInterfacesCommand, EC2Client }                                                                                                                 from '@aws-sdk/client-ec2';
 import { DescribeClustersCommand, DescribeTasksCommand, ECSClient, ListTagsForResourceCommand, ListTasksCommand, RunTaskCommand, StopTaskCommand, TagResourceCommand } from '@aws-sdk/client-ecs';
-import { ChangeResourceRecordSetsCommand, ListResourceRecordSetsCommand, GetChangeCommand, ListHostedZonesByNameCommand, Route53Client as R53Client, RRType } from '@aws-sdk/client-route-53';
-import codecParse from '@gershy/util-codec-parse';
-import { Pollen, type PollenInp, type Scheme } from '@gershy/pollen';
-import { PollenHttp } from '@gershy/pollen-http';
-import { regions as awsRegions, httpPools, Soil, NodeHttpHandler} from '@gershy/lilac';
-import retry from '@gershy/util-retry';
-import paging from '@gershy/util-paging';
-import Logger from '@gershy/logger';
-import { crypto as acmeCrypto, Client as AcmeClient, directory as acmeDirectory } from 'acme-client';
-import { PollenSokt } from '@gershy/pollen-sokt';
-import { fetch as undiciFetch, Agent as UndiciAgent, WebSocket as UndiciWebSocket } from 'undici';
-import type { AdminPlatformFnInp, Cert } from './platform.ts';
-import type { Fact } from '@gershy/disk';
+import { ChangeResourceRecordSetsCommand, ListResourceRecordSetsCommand, GetChangeCommand, ListHostedZonesByNameCommand, Route53Client as R53Client, RRType }          from '@aws-sdk/client-route-53';
+import codecParse                                                                                                                                                      from '@gershy/util-codec-parse';
+import { Pollen, type PollenInp, type Scheme }                                                                                                                         from '@gershy/pollen';
+import { PollenHttp }                                                                                                                                                  from '@gershy/pollen-http';
+import { regions as awsRegions, httpPools, Soil, NodeHttpHandler}                                                                                                      from '@gershy/lilac';
+import retry                                                                                                                                                           from '@gershy/util-retry';
+import paging                                                                                                                                                          from '@gershy/util-paging';
+import { PollenSokt }                                                                                                                                                  from '@gershy/pollen-sokt';
+import Logger                                                                                                                                                          from '@gershy/logger';
+import { crypto as acmeCrypto, Client as AcmeClient, directory as acmeDirectory }                                                                                      from 'acme-client';
+import { fetch as undiciFetch, Agent as UndiciAgent, WebSocket as UndiciWebSocket }                                                                                    from 'undici';
+import funnel                                                                                                                                                          from '../util/funnel.ts';
+import type { AdminPlatformFnInp, Cert }                                                                                                                               from './platform.ts';
+import type { Fact }                                                                                                                                                   from '@gershy/disk';
 
 // TODO: "host" vs "domain" vs "address"
 // "host" - network-recognized machine name (e.g. domain name, ip address)
 // "domain" - dns-recognized name/ip mapping
 // "address" - ???
 
-const { funnel } = (() => {
+(() => {
   
   // TODO: @gershy/iac-lifecycle (or can it be more generic than iac? but it will involve permissions...)
   abstract class AbstractIac {
@@ -76,37 +77,6 @@ const { funnel } = (() => {
     
   });
   void [ IacArr, platformerIac ];
-  
-  const funnel = async function*<T>(gens: AsyncGenerator<T>[]): AsyncGenerator<T> {
-    
-    // TODO: move to @gershy/util-funnel
-    
-    const streams = new Set(gens.map(gen => {
-      
-      const stream = {
-        pending: gen.next(),
-        next: () => stream.pending = gen.next(),
-      };
-      return stream;
-      
-    }));
-    
-    while (streams.size) {
-      
-      const { stream, itr } = await Promise.race(
-        [ ...streams ]
-          .map(stream => stream.pending.then(itr => ({ stream, itr })))
-      );
-      if (itr.done) { streams.delete(stream); continue; }
-      
-      stream.next();
-      yield itr.value;
-      
-    }
-    
-  };
-  
-  return { funnel };
   
 })();
 
