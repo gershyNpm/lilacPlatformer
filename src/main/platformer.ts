@@ -333,9 +333,9 @@ export class Platformer<LocalData extends Jsfn, LaunchData> extends Flower {
     // const clusterCapacityProviders = new Resource('awsEcsClusterCapacityProviders', `${this.name}Cluster`, {
     //   ...regionProvider,
     //   clusterName: cluster.ref('name'),
-    //   capacityProviders: [ 'FARGATE' ], // Could add FARGATE_SPOT, but such instances may randomly be reclaimed by aws
+    //   capacityProviders: [ 'fargate'[cl.upper]() ], // Could add FARGATE_SPOT, but such instances may randomly be reclaimed by aws
     //   $defaultCapacityProviderStrategy: {
-    //     capacityProvider: 'FARGATE',
+    //     capacityProvider: 'fargate'[cl.upper](),
     //     base: 1,
     //     weight: 1
     //   }
@@ -349,7 +349,7 @@ export class Platformer<LocalData extends Jsfn, LaunchData> extends Flower {
       
       // One task definition per Platformer; each launched task is a platform instance.
       family: flowerName,
-      requiresCompatibilities: [ 'FARGATE' ],
+      requiresCompatibilities: [ 'fargate'[cl.upper]() ],
       networkMode: 'awsvpc',
       executionRoleArn: taskExecRole.ref('arn'),
       
