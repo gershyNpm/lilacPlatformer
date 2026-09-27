@@ -1,0 +1,39 @@
+{
+  "name": "@gershy/lilac-platformer",
+  "version": "0.0.1",
+  "author": "Gershom Maes",
+  "description": "TODO",
+  "keywords": [
+    "TODO"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gershyNpm/lilacPlatformer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gershyNpm/lilacPlatformer/issues"
+  },
+  "homepage": "https://github.com/gershyNpm/lilacPlatformer#readme",
+  "type": "module",
+  "files": [
+    "cmp"
+  ],
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@gershy/entry": "^0.0.27"
+  },
+  "peerDependencies": {
+    "@gershy/clearing": "^0.0.55"
+  },
+  "scripts": {
+    "test": "npm run ts.check && npx tsx ./src/main.test.ts",
+    "ts.check": "npx tsc --noEmit"
+  },
+  "exports": {
+    ".": {
+      "import": "./cmp/esm/main.js",
+      "require": "./cmp/cjs/main.js"
+    }
+  }
+}
