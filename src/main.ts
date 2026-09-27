@@ -1,3 +1,1 @@
-import '@gershy/clearing';
-
-export default null;
+export * from './main/platformer.ts';

@@ -1,10 +1,13 @@
 {
   "name": "@gershy/lilac-platformer",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "author": "Gershom Maes",
   "description": "TODO",
   "keywords": [
-    "TODO"
+    "platform",
+    "server",
+    "platformer",
+    "fargate"
   ],
   "repository": {
     "type": "git",
@@ -18,13 +21,34 @@
   "files": [
     "cmp"
   ],
-  "dependencies": {},
   "devDependencies": {
+    "@aws-sdk/client-ecs": "^3.1106.0",
+    "@gershy/entry": "^0.0.27",
+    "@gershy/lilac-domain": "^0.0.23",
+    "@gershy/lilac-lambda": "^0.0.33",
+    "@smithy/node-http-handler": "^4.12.1",
     "@types/node": "^24.10.1",
-    "@gershy/entry": "^0.0.27"
+    "@types/ws": "^8.18.1"
   },
   "peerDependencies": {
     "@gershy/clearing": "^0.0.55"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ec2": "^3.1106.0",
+    "@aws-sdk/client-ecr": "^3.1105.0",
+    "@aws-sdk/client-route-53": "^3.1116.0",
+    "@gershy/lilac-lambda-http": "^0.0.32",
+    "@gershy/pollen": "^0.0.7",
+    "@gershy/pollen-http": "^0.0.7",
+    "@gershy/pollen-sokt": "^0.0.10",
+    "@gershy/util-hash": "^0.0.28",
+    "@gershy/util-paging": "^0.0.2",
+    "@gershy/util-phrasing": "^0.0.21",
+    "@gershy/util-slash-escape": "^0.0.17",
+    "acme-client": "^5.4.0",
+    "selfsigned": "^5.5.0",
+    "undici": "^8.10.2",
+    "ws": "^8.21.3"
   },
   "scripts": {
     "test": "npm run ts.check && npx tsx ./src/main.test.ts",
