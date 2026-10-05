@@ -7,13 +7,13 @@ import { PollenHttp }                                                           
 import { regions as awsRegions, httpPools, Soil, NodeHttpHandler}                                                                                                      from '@gershy/lilac';
 import retry                                                                                                                                                           from '@gershy/util-retry';
 import paging                                                                                                                                                          from '@gershy/util-paging';
-import { PollenSokt }                                                                                                                                                  from '@gershy/pollen-sokt';
 import Logger                                                                                                                                                          from '@gershy/logger';
 import { crypto as acmeCrypto, Client as AcmeClient, directory as acmeDirectory }                                                                                      from 'acme-client';
-import { fetch as undiciFetch, Agent as UndiciAgent, WebSocket as UndiciWebSocket }                                                                                    from 'undici';
 import funnel                                                                                                                                                          from '../util/funnel.ts';
+import { PollenPlatformSession }                                                                                                                                       from './session.ts';
 import type { AdminPlatformFnInp, Cert }                                                                                                                               from './platform.ts';
 import type { Fact }                                                                                                                                                   from '@gershy/disk';
+import type { fetch as undiciFetch, Agent as UndiciAgent, WebSocket as UndiciWebSocket }                                                                               from 'undici';
 
 // TODO: "host" vs "domain" vs "address"
 // "host" - network-recognized machine name (e.g. domain name, ip address)
@@ -80,6 +80,7 @@ import type { Fact }                                                            
   
 })();
 
+export type UndiciUtils = { fetch: typeof undiciFetch, Agent: typeof UndiciAgent, WebSocket: typeof UndiciWebSocket };
 export type TaskStatus = 'provisioning' | 'pending' | 'activating' | 'running' | 'deactivating' | 'stopping' | 'deprovisioning' | 'stopped' | 'deleted';
 export type Task = {
   id: string,
@@ -108,6 +109,7 @@ export type PollenPlatformerInp = PollenInp<`awsFargate/${string}`> & {
     rootHost: `${string}.${string}`,
     letsEncrypt: { accountPrivateKey?: string, directory: 'm1' | 'm2', email: string }
   },
+  undici?: UndiciUtils,
   stockEc2Client?: EC2Client,
   stockEcsClient?: ECSClient,
   stockR53Client?: R53Client,
@@ -129,6 +131,7 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
     letsEncrypt: { accountPrivateKey?: string, directory: 'm1' | 'm2', email: string },
     certPrm: null | Promise<Cert> | Cert
   };
+  protected undici: null | UndiciUtils;
   protected stockEc2Client:    null | EC2Client;
   protected stockEcsClient:    null | ECSClient;
   protected stockR53Client:    null | R53Client;
@@ -138,8 +141,10 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
     super(inp);
     
     this.dns = inp.dns ? { ...inp.dns, certPrm: null } : null;
-    
     if (this.dns) Error[cl.assert](this.dns, inp => /^[a-z0-9-]+(?:[.][a-z0-9-]+)+$/.test(inp.rootHost));
+    
+    this.undici = inp.undici ?? null;
+    if (!this.dns) Error[cl.assert](this.undici, inp => !!inp);
     
     this.stockEc2Client = inp.stockEc2Client ?? null;
     this.stockEcsClient = inp.stockEcsClient ?? null;
@@ -397,9 +402,9 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
         
         const task = this.makeTask(awsTask);
         const platform = await this.taskToPlatform({ logger, task, requireLilacActive: true });
-        const adminApi = await this.platformAdminPollenGet(platform);
+        const admin = await this.platformAdminPollenGet(platform);
         
-        const expiryMs = await adminApi.fly({}, o => o.state.mainApi?.cert?.expiryMs ?? null);
+        const expiryMs = await admin.fly({}, o => o.state.mainApi?.cert?.expiryMs ?? null);
         if (!expiryMs) continue; // No expiry ms is a failure mode; ignore!
         counts.total++;
         
@@ -408,7 +413,7 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
         
         // Update the task's cert...
         const cert = await this.getLetsEncryptCert({ logger });
-        await adminApi.fly({ cert }, o => o.state.mainApi?.setCert(o.inp.cert));
+        await admin.fly({ cert }, o => o.state.mainApi?.setCert(o.inp.cert));
         counts.renewed++;
         
       }
@@ -627,77 +632,85 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
     // - We want to resolve `this.dns.certPrm` to the actual non-promise cert when it's ready
     // - We never want this method to return a stale cert
     
+    const { logger } = inp;
     const { dns } = this;
     if (!dns) throw Error('dns missing');
     
-    if (!dns.certPrm) dns.certPrm = (async () => {
+    return logger.scope('cert', { cache: dns.configFact.fsp() }, async logger => {
       
-      const { logger } = inp;
-      const { rootHost, configFact, letsEncrypt } = dns;
-      
-      // Try disk cache
-      const fact = configFact.kid([ 'letsEncrypt', rootHost ]);
-      const factCert = await fact.getData<null | Cert>('json');
-      if (factCert && this.isCertFresh(factCert)) return factCert;
-      
-      const cert = await logger.scope('acme.letsEncrypt', {}, async () => {
+      if (!dns.certPrm) dns.certPrm = (async () => {
         
-        // Disk cache miss - perform acme
+        const { rootHost, configFact, letsEncrypt } = dns;
         
-        const accountKey = letsEncrypt.accountPrivateKey ?? await acmeCrypto.createPrivateKey();
+        // Try disk cache
+        const fact = configFact.kid([ 'letsEncrypt', rootHost ]);
+        const factCert = await fact.getData<null | Cert>('json');
+        if (factCert && this.isCertFresh(factCert)) {
+          logger.log({ $$: 'factCache' });
+          return factCert;
+        }
         
-        const dirUrlName = ({ m1: 'staging', m2: 'production' } as const)[letsEncrypt.directory];
-        const client = new AcmeClient({
-          directoryUrl: acmeDirectory.letsencrypt[dirUrlName],
-          accountKey
+        const cert = await logger.scope('acme', {}, async () => {
+          
+          // Disk cache miss - perform acme
+          
+          const accountKey = letsEncrypt.accountPrivateKey ?? await acmeCrypto.createPrivateKey();
+          
+          const dirUrlName = ({ m1: 'staging', m2: 'production' } as const)[letsEncrypt.directory];
+          const client = new AcmeClient({
+            directoryUrl: acmeDirectory.letsencrypt[dirUrlName],
+            accountKey
+          });
+          
+          const [ prv, csr ] = await acmeCrypto.createCsr({
+            commonName: `*.${rootHost}`,
+            altNames: [ `*.${rootHost}` ]
+          });
+          const pub = await client.auto({
+            
+            csr,
+            email: letsEncrypt.email,
+            termsOfServiceAgreed: true,
+            challengePriority: [ 'dns-01' ],
+            
+            challengeCreateFn: async (authz, { type, token }, auth) => {
+              
+              Error[cl.assert](type, t => t === 'dns-01');
+              await this.dnsMod({ logger, op: 'set', type: 'txt', key: `_acme-challenge.${rootHost}`, val: `"${auth}"` });
+              
+            },
+            
+            // Fired automatically once verification succeeds or fails
+            challengeRemoveFn: async (authz, { type, token }, auth) => {
+              
+              Error[cl.assert](type, t => t === 'dns-01');
+              await this.dnsMod({ logger, op: 'rem', type: 'txt', key: `_acme-challenge.${rootHost}`, val: `"${auth}"` });
+              
+            }
+            
+          });
+          const certInfo = acmeCrypto.readCertificateInfo(pub);
+          
+          return { '!prv': prv.toString(), pub, expiryMs: certInfo.notAfter.getTime() };
+          
         });
         
-        const [ prv, csr ] = await acmeCrypto.createCsr({
-          commonName: `*.${rootHost}`,
-          altNames: [ `*.${rootHost}` ]
-        });
-        const pub = await client.auto({
-          
-          csr,
-          email: letsEncrypt.email,
-          termsOfServiceAgreed: true,
-          challengePriority: [ 'dns-01' ],
-          
-          challengeCreateFn: async (authz, { type, token }, auth) => {
-            
-            Error[cl.assert](type, t => t === 'dns-01');
-            await this.dnsMod({ logger, op: 'set', type: 'txt', key: `_acme-challenge.${rootHost}`, val: `"${auth}"` });
-            
-          },
-          
-          // Fired automatically once verification succeeds or fails
-          challengeRemoveFn: async (authz, { type, token }, auth) => {
-            
-            Error[cl.assert](type, t => t === 'dns-01');
-            await this.dnsMod({ logger, op: 'rem', type: 'txt', key: `_acme-challenge.${rootHost}`, val: `"${auth}"` });
-            
-          }
-          
-        });
-        const certInfo = acmeCrypto.readCertificateInfo(pub);
+        await fact.setData(cert);
+        return cert;
         
-        return { '!prv': prv.toString(), pub, expiryMs: certInfo.notAfter.getTime() };
-        
-      });
+      })().then(cert => dns.certPrm = cert);
       
-      await fact.setData(cert);
+      const cert = await dns.certPrm;
+      if (!this.isCertFresh(cert)) {
+        // Refresh the cert by invalidating it and calling recursively
+        dns.certPrm = null;
+        return this.getLetsEncryptCert(inp);
+      }
+      logger.log({ $$: 'result', durationMs: cert.expiryMs - Date.now() });
+      
       return cert;
       
-    })().then(cert => dns.certPrm = cert);
-    
-    const cert = await dns.certPrm;
-    if (!this.isCertFresh(cert)) {
-      // Refresh the cert by invalidating it and calling recursively
-      dns.certPrm = null;
-      return this.getLetsEncryptCert(inp);
-    }
-    
-    return cert;
+    });
     
   }
   
@@ -707,8 +720,7 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
     
     await logger.scope('initPlatformHttp', { ipHost }, async () => {
       
-      const platformAdminPollen = this.platformAdminPollenGet(inp.platform);
-      await platformAdminPollen.fly({ ipHost }, async inp => {
+      await this.platformAdminPollenGet(inp.platform).fly({ ipHost }, async inp => {
         await inp.state.launchMainHttp({ type: 'ip', certType: 'self', host: inp.inp.ipHost });
       });
       
@@ -724,9 +736,8 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
     
     await logger.scope('initPlatformHttp', { dnsHost }, async logger => {
       
-      const platformAdminPollen = this.platformAdminPollenGet(platform);
-      
-      await platformAdminPollen.fly({ dnsHost, cert }, async inp => {
+      const admin = this.platformAdminPollenGet(platform);
+      await admin.fly({ dnsHost, cert }, async inp => {
         const api = await inp.state.launchMainHttp({ type: 'dns', certType: 'auth', host: inp.inp.dnsHost });
         api.setCert(inp.inp.cert);
       });
@@ -943,14 +954,14 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
       logger.log({ $$: 'platform', platform });
       
       // Poll the admin api to confirm it's live
-      const platformAdminPollen = this.platformAdminPollenGet(platform);
+      const admin = this.platformAdminPollenGet(platform);
       await retry({ maxDelayMs: 30 * 1000, delayMs: n => Math.min(1500, n * 250), retry: () => true, fn: async attempt => {
         
         // TODO: This can fail for some reason... with the task never coming alive??
         
         logger.log({ $$: 'attempt', attempt });
         
-        await platformAdminPollen.fly({}, inp => {
+        await admin.fly({}, inp => {
           return { env: { ...(process.env as Obj<string>) } };
         });
         
@@ -978,7 +989,7 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
       else         await this.initIpSelfSignHttp ({ logger, platform: platform });
       
       // Query hosting details from the admin api, to allow clients to connect to the main api
-      const hosting = await platformAdminPollen.fly({}, async inp => {
+      const hosting = await admin.fly({}, async inp => {
         
         const api = inp.state.mainApi!;
         return {
@@ -1008,6 +1019,23 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
     
   }
   
+  public async platformRegard(inp: { logger: Logger, platform: Platform }) {
+    
+    const { logger, platform } = inp;
+    const admin = this.platformAdminPollenGet(platform);
+    const { netProc, cert = null } = await admin.fly({}, inp => {
+      const api = inp.state.mainApi!;
+      return {
+        netProc: { proto: 'https', addr: api.host as `${string}.${string}`, port: 443 },
+        ...(api.certType === 'self' ? { cert: api.cert![cl.slice]([ 'pub' ]) } : {})
+      };
+    });
+    logger.log({ $$: 'connection', netProc, cert });
+    
+    return { netProc, cert };
+    
+  }
+  
   public async platformSessionLaunch(inp: { logger: Logger, platform: Platform }) {
     
     const { logger, platform } = inp;
@@ -1015,21 +1043,12 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
     return logger.scope('platformSessionLaunch', {}, async logger => {
       
       // Use admin api to get main api connection details
-      const pollen = this.platformAdminPollenGet(platform);
-      const { netProc, cert = null } = await pollen.fly({}, inp => {
-        
-        const api = inp.state.mainApi!;
-        return {
-          netProc: { proto: 'https', addr: api.host as `${string}.${string}`, port: 443 },
-          ...(api.certType === 'self' ? { cert: api.cert![cl.slice]([ 'pub' ]) } : {})
-        };
-        
-      });
+      const { netProc, cert } = await this.platformRegard({ logger, platform });
       logger.log({ $$: 'connection', netProc, cert });
       
       const platformPollen = new PollenPlatformSession({
         flowerId: `domain/${netProc.addr}` as const,
-        ...(cert && { cert })
+        ...(cert && { cert: { ...cert, undici: this.undici! } }),
       });
       await platformPollen.getDef(logger); // Trigger websocket instantiation and user id negotiation as part of the "join" operation
       
@@ -1068,7 +1087,10 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
       
       await Promise.all([
         
-        ecsClient.send(new StopTaskCommand({ cluster: cluster.name, task: platform.task.id })),
+        logger.scope('taskStop', {}, () => {
+          return ecsClient.send(new StopTaskCommand({ cluster: cluster.name, task: platform.task.id }))
+        }),
+        
         ...(platform.dnsHost
           ? [ this.dnsMod({ logger, op: 'rem', type: 'a', key: platform.dnsHost, val: platform.ipHost }) ]
           : []
@@ -1173,128 +1195,3 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
   
 };
 
-export class PollenPlatformSession extends Pollen<{ http: PollenHttp; sokt: PollenSokt, userId: string, hear: AsyncGenerator<Json> }> {
-  
-  protected cert: null | { pub: string };
-  
-  constructor(inp: PollenInp<'domain'> & { cert?: { pub: string } }) {
-    
-    super(inp);
-    this.cert = inp.cert ?? null;
-    
-  }
-  
-  protected async sanitizeDef(def: unknown, logger: Logger) {
-    
-    const { addr, port = null, http: httpInp = null } = codecParse({ type: 'rec', loose: true, props: {
-      // TODO: this http-validating codec is duplicated quite a bit...
-      addr: { type: 'str', map: v => v as `${string}.${string}` },
-      port: { req: false, type: 'num' },
-      http: { req: false, type: 'rec', loose: true, props: {
-        path: { req: true, type: 'arr', item: { type: 'str' } },
-        method: { req: false, type: 'enum', opts: [ 'head', 'get', 'post', 'put', 'patch', 'delete' ] }
-      }}
-    }} as const, def);
-    
-    const connect = !this.cert ? null : (() => {
-      
-      // An agent, and wrapper fetch+SoktCls values that use the agent as dispatcher
-      const agent = new UndiciAgent({ connect: { ca: this.cert.pub, rejectUnauthorized: true } });
-      const fetch = (url: string, inp: Obj<any>) => undiciFetch(url, { ...inp, dispatcher: agent });
-      const SoktCls = function(url, opts: Obj<any> = {}) {
-        return new UndiciWebSocket(url, { ...opts, dispatcher: agent });
-      } as any as typeof UndiciWebSocket;
-      
-      logger.log({ $$: 'selfSign' });
-      
-      return { agent, fetch, SoktCls };
-      
-    })();
-    
-    // Define sokt pollen and listen for the initial user id
-    const sokt = new PollenSokt({
-      
-      garden: this.garden,
-      flowerId: `domain/${addr}` as const,
-      ...(connect ? { SoktCls: connect.SoktCls } : {})
-      
-    });
-    await logger.scope('sokt', {}, logger => sokt.getDef(logger));
-    
-    // const userId = (await sokt.hear()[cl.find](msg => msg.t === 'id'))?.id ?? null; // TODO: cool potential for `AsyncGenerator.prototype[cl.find]`
-    const hear = sokt.hear();
-    const userId = await logger.scope('getUserId', {}, async logger => {
-      
-      while (true) {
-        
-        const v = await hear.next();
-        if (v.done) break;
-        
-        const msg = v.value as Obj<any>;
-        logger.log({ $$: 'notice', msg });
-        
-        if (msg.t === 'id') return msg.id as string;
-        
-      }
-      
-      return null;
-      
-    });
-    logger.log({ $$: 'userId', userId });
-    
-    if (!userId) throw Error('user id missing');
-    
-    const http = new PollenHttp({
-      garden: this.garden,
-      flowerId: `domain/${addr}` as const,
-      httpInp: {
-        method: 'post',
-        ...(connect !== null ? { fetch: connect.fetch } : {}),
-        ...(port    !== null ? { port                 } : {}),
-        ...(httpInp !== null ? { http: httpInp        } : {}),
-        path: [ 'user', userId ] // Include `userId` in all body requests
-      } as any
-    });
-    await logger.scope('http', {}, async logger => {
-      await http.getDef(logger);
-    });
-    
-    return { http, sokt, userId, hear };
-    
-  }
-  
-  public async hear(logger?: Logger) {
-    
-    // TODO: See SoktPollen.prototype.notice - any sokt-related action initializes the websocket,
-    // and once initialized, inbound notices are emitted by this function
-    return (await this.getDef(logger)).hear;
-    
-  }
-  
-  public async tell<R extends boolean = false>(inp: { logger?: Logger, reply?: R, msg: Json }): Promise<R extends true ? Json : void> {
-    
-    const { http, sokt, userId } = await this.getDef();
-    const { reply = false, msg } = inp;
-    
-    // If no reply is requested simply send via sokt
-    if (!reply) return sokt.fly(msg) as any;
-    
-    // Otherwise send via http
-    const res = await http.fly({ path: [ userId ], body: msg });
-    return res.body as any;
-    
-  }
-  
-  public async cancel(inp: { logger: Logger }) {
-    
-    const { sokt } = await this.getDef();
-    await sokt.cancel()
-    
-  }
-  
-  public async fly(inp: never) { throw Error('script missing'); }
-  
-  protected getJsfnHoist() { return `${import.meta.filename}::{${this.constructor.name}}` as const; }
-  protected getJsfnInp() { return {}; }
-  
-};

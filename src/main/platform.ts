@@ -1,4 +1,4 @@
-import type { User } from './platformer.ts';
+import type { Session } from './platformer.ts';
 import type Logger from '@gershy/logger';
 import type { Jsfn } from '@gershy/util-jsfn-encode';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -24,7 +24,7 @@ export type MainFnInp<
   LocalData extends Jsfn,
   LaunchData,
   LaunchFn extends (inp: { debug: boolean, logger: Logger, jsfnImport: (fp: string) => any, localData: LocalData }) => LaunchData,
-  InvokeFn extends (inp: { debug: boolean, logger: Logger, jsfnImport: (fp: string) => any, launchData: LaunchData, user: User, inp: any }) => Promise<void>
+  InvokeFn extends (inp: { debug: boolean, logger: Logger, jsfnImport: (fp: string) => any, launchData: LaunchData, session: Session, inp: any }) => Promise<void>
 > = {
   jsfnImport:    <S extends string>(fp: S) => any, // import(S)
   name:          string,
@@ -271,7 +271,7 @@ export default { baseUrl: import.meta.url, val: (inp: MainFnInp<any, any, any, a
       
       launchMainHttp: async inp => {
         
-        const users = new Map<User['id'], User>()
+        const sessions = new Map<Session['id'], Session>()
         
         const server = await runServer({
           logger: logger.kid('https'),
@@ -281,14 +281,11 @@ export default { baseUrl: import.meta.url, val: (inp: MainFnInp<any, any, any, a
             if (inp.path === '/ping') return { code: 200, body: { msg: 'pong' } };
             
             const userId = inp.path.split('/').at(-1)!; // Ignore all but last component?
-            const user = users.get(userId);
+            const user = sessions.get(userId);
             if (!user) return { code: 400, body: { msg: 'bad request' } };
             
             topLevelKeepAlive();
-            return {
-              code: 200,
-              body: await invokeFn({ debug, logger, launchData, jsfnImport, user, inp: inp.body })
-            };
+            return { code: 200, body: await invokeFn({ debug, logger, launchData, jsfnImport, user, inp: inp.body }) };
             
           }
         });
@@ -296,24 +293,24 @@ export default { baseUrl: import.meta.url, val: (inp: MainFnInp<any, any, any, a
         
         soktServer.on('connection', sokt => {
           
-          const user: User = {
+          const session: Session = {
             id: Math.random().toString(36).slice(2),
             sokt,
             send: (inp: Json) => new Promise((rsv, rjc) => sokt.send(JSON.stringify(inp), err => err ? rjc(err) : rsv()))
           };
           
-          users.set(user.id, user);
-          user.send({ t: 'id', id: user.id });
+          sessions.set(session.id, session);
+          session.send({ t: 'id', id: session.id });
           
           sokt.on('message', async inp => {
             
             topLevelKeepAlive();
             if (cl.isCls(inp, Array)) inp = Buffer.concat(inp);
             if (cl.isCls(inp, ArrayBuffer)) inp = Buffer.from(new Uint8Array(inp));
-            await invokeFn({ debug, logger, launchData, jsfnImport, user, inp: JSON.parse(inp) });
+            await invokeFn({ debug, logger, launchData, jsfnImport, user: session, inp: JSON.parse(inp) });
             
           });
-          sokt.on('close', () => users.delete(user.id));
+          sokt.on('close', () => sessions.delete(session.id));
           
         });
         

@@ -1,12 +1,13 @@
 import '@gershy/clearing';
-import { assertEqual, cmpAny, cmpFn, cmpReg, testRunner } from '../build/utils.test.ts';
-import { Platformer }                                     from './main/platformer.ts';
-import tracked                                            from './util/tracked.ts';
-import { entry }                                          from '@gershy/entry';
-import { Garden }                                         from '@gershy/lilac';
-import { rootFact }                                       from '@gershy/disk';
-import { gardenAwsTest }                                  from './garden.test.ts';
-import { Domain }                                         from '@gershy/lilac-domain';
+import { assertEqual, cmpAny, cmpFn, cmpReg, testRunner }                           from '../build/utils.test.ts';
+import { Platformer }                                                               from './main/platformer.ts';
+import tracked                                                                      from './util/tracked.ts';
+import { entry }                                                                    from '@gershy/entry';
+import { Garden }                                                                   from '@gershy/lilac';
+import { rootFact }                                                                 from '@gershy/disk';
+import { gardenAwsTest }                                                            from './garden.test.ts';
+import { Domain }                                                                   from '@gershy/lilac-domain';
+import { fetch as undiciFetch, Agent as UndiciAgent, WebSocket as UndiciWebSocket } from 'undici';
 
 const codec = { type: 'rec', props: {
   reg:    { type: 'str', map: (str: string) => new RegExp(str) },
@@ -56,12 +57,12 @@ entry({ name: 'lilacPlatformer', codec, log, inp: { reg: '^', effort: 0, preserv
           power: 0,
           localData: { desc: 'my local data' },
           launchFn: async v => v.localData,
-          invokeFn: async ({ launchData, user, inp }) => {
+          invokeFn: async ({ launchData, session, inp }) => {
             
             const msg = { echo: inp, utcMs: Date.now(), launchData };
-            await user.send({ ...msg, sokt: 1 });
-            await user.send({ ...msg, sokt: 2 });
-            await user.send({ ...msg, sokt: 3 });
+            await session.send({ ...msg, sokt: 1 });
+            await session.send({ ...msg, sokt: 2 });
+            await session.send({ ...msg, sokt: 3 });
             
             return msg;
             
@@ -70,7 +71,9 @@ entry({ name: 'lilacPlatformer', codec, log, inp: { reg: '^', effort: 0, preserv
         
         return {
           name: platformer.getFlowerId().split('/').at(-1)!,
-          platformerPollen: platformer.addPollen()
+          platformerPollen: platformer.addPollen({
+            undici: { fetch: undiciFetch, Agent: UndiciAgent, WebSocket: UndiciWebSocket }
+          })
         };
         
       }}),
@@ -142,17 +145,17 @@ entry({ name: 'lilacPlatformer', codec, log, inp: { reg: '^', effort: 0, preserv
           power:     0,
           localData: { desc: 'my local data' },
           launchFn: async v => v.localData,
-          invokeFn: async ({ launchData, user, inp }) => {
+          invokeFn: async ({ launchData, session, inp }) => {
             
             if (cl.isCls(inp, Object) && inp[cl.at]('x') === 'x') {
-              await user.send({ xxx: 'xxx', sokt: 999 });
+              await session.send({ xxx: 'xxx', sokt: 999 });
               return null;
             }
             
             const msg = { echo: inp, utcMs: Date.now(), launchData };
-            await user.send({ ...msg, sokt: 1 });
-            await user.send({ ...msg, sokt: 2 });
-            await user.send({ ...msg, sokt: 3 });
+            await session.send({ ...msg, sokt: 1 });
+            await session.send({ ...msg, sokt: 2 });
+            await session.send({ ...msg, sokt: 3 });
             
             return msg;
             

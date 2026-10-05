@@ -7,12 +7,11 @@ import proc                                                               from '
 import { DescribeImagesCommand, ECRClient, GetAuthorizationTokenCommand } from '@aws-sdk/client-ecr';
 import { Fact, rootFact, tempFact }                                       from '@gershy/disk';
 import scriptBundle                                                       from '@gershy/script-bundle';
-import { existsSync }                                                     from 'node:fs';
 import jsfnEncode, { type Jsfn, type JsImport }                           from '@gershy/util-jsfn-encode';
 import slashEscape                                                        from '@gershy/util-slash-escape';
 import hash                                                               from '@gershy/util-hash';
 import { getImports, mergeJsImports }                                     from '../util/jsfnImport.ts';
-import { PollenPlatformer }                                               from './pollenPlatformer.ts';
+import { PollenPlatformer, type UndiciUtils }                             from './pollenPlatformer.ts';
 import platformScript                                                     from './platform.ts';
 import type { AnyLambda }                                                 from '@gershy/lilac-lambda';
 import type { Domain }                                                    from '@gershy/lilac-domain';
@@ -42,7 +41,7 @@ import type { AwsRegionTerm, ServiceMap }                                 from '
 
 type MbPrm<V> = Promise<V> | V;
 
-export type User = {
+export type Session = {
   id: string,
   sokt: any,
   send: (inp: Json) => Promise<void>
@@ -56,9 +55,9 @@ export class Platformer<LocalData extends Jsfn, LaunchData> extends Flower {
   protected certFact:   null | Fact;
   protected name:       string;
   protected power:     -2 | -1 | 0 | 1 | 2 | 3 | 4 | 5;
-  protected localData:  ((inp: Platformer<any, any>                                                                                                   ) => MbPrm<LocalData>) | MbPrm<LocalData>;
-  protected launchFn:   ((inp: { debug: boolean, logger: Logger, jsfnImport: (fp: string) => any, localData: LocalData                                  }) => LaunchData);
-  protected invokeFn:   ((inp: { debug: boolean, logger: Logger, jsfnImport: (fp: string) => any, launchData: Awaited<LaunchData>, user: User, inp: any }) => Promise<Json>);
+  protected localData:  ((inp: Platformer<any, any>                                                                                                            ) => MbPrm<LocalData>) | MbPrm<LocalData>;
+  protected launchFn:   ((inp: { debug: boolean, logger: Logger, jsfnImport: (fp: string) => any, localData: LocalData                                        }) => LaunchData);
+  protected invokeFn:   ((inp: { debug: boolean, logger: Logger, jsfnImport: (fp: string) => any, launchData: Awaited<LaunchData>, session: Session, inp: any }) => Promise<Json>);
   protected baseUrl:    string;
   protected pistils:    { lbd: AnyLambda, mode: 'view' | 'mark' | 'keep' }[];
   protected env:        Obj<Json>;
@@ -71,9 +70,9 @@ export class Platformer<LocalData extends Jsfn, LaunchData> extends Flower {
     name:        string,
     baseUrl:     string,
     power:       -2 | -1 | 0 | 1 | 2 | 3 | 4 | 5,
-    localData:   ((inp: Platformer<any, any>                                                                                                   ) => (Promise<LocalData> | LocalData)) | Promise<LocalData> | LocalData,
-    launchFn:    ((inp: { debug: boolean, logger: Logger, jsfnImport: (fp: string) => any, localData: LocalData                                  }) => LaunchData);
-    invokeFn:    ((inp: { debug: boolean, logger: Logger, jsfnImport: (fp: string) => any, launchData: Awaited<LaunchData>, user: User, inp: any }) => Promise<Json>);
+    localData:   ((inp: Platformer<any, any>                                                                                                            ) => (Promise<LocalData> | LocalData)) | Promise<LocalData> | LocalData,
+    launchFn:    ((inp: { debug: boolean, logger: Logger, jsfnImport: (fp: string) => any, localData: LocalData                                        }) => LaunchData);
+    invokeFn:    ((inp: { debug: boolean, logger: Logger, jsfnImport: (fp: string) => any, launchData: Awaited<LaunchData>, session: Session, inp: any }) => Promise<Json>);
     configFact?: Fact,
     manualConfirmations?: {
       nameServersConnected?: boolean
@@ -108,6 +107,7 @@ export class Platformer<LocalData extends Jsfn, LaunchData> extends Flower {
   
   public * getDependencies() {
     yield* super.getDependencies();
+    if (this.domain) yield this.domain;
     for (const pistil of this.pistils) yield pistil.lbd;
   }
   
@@ -426,7 +426,7 @@ export class Platformer<LocalData extends Jsfn, LaunchData> extends Flower {
         
       })();
       
-      logger.log({ $$: 'ecrAuth', ecrAuth });
+      logger.log({ ecrAuth });
       
       const dockerOpsFact = tempFact.kid([ Math.random().toString(36).slice(2) ]);
       const dockerEnv = {
@@ -440,15 +440,13 @@ export class Platformer<LocalData extends Jsfn, LaunchData> extends Flower {
       };
       const dockerBuilderId = `lilac-${Math.random().toString(36).slice(2)}`;
       
-      // Super ugly, because there are many possibilities for where buildx is stored
-      const dockerPluginDirs = (() => {
+      const dockerPluginDirs = await (async () => {
         
-        // TODO: HEEERE2
-        // [X] Docker buildx is working, but need to fix admin api access
-        // [ ] Eliminate `existsSync`, just use Facts
-        // [ ] Incorporate windows filepaths
-        // [ ] I hate that this approach is necessary but it's probably the only way
-        return [
+        // Super ugly, because there are many possibilities for where buildx is stored - I hate
+        // that this approach is necessary but it's possibly the only way...
+        const possibleFps = new Set([
+          
+          // posix
           ...(process.env.DOCKER_CLI_PLUGIN_EXTRA_DIRS?.split(/[:;]/) ?? []),
           ...(process.env.HOME ? [ `${process.env.HOME}/.docker/cli-plugins` ] : []),
           '/Applications/Docker.app/Contents/Resources/cli-plugins',
@@ -456,11 +454,23 @@ export class Platformer<LocalData extends Jsfn, LaunchData> extends Flower {
           '/usr/local/lib/docker/cli-plugins',
           '/usr/libexec/docker/cli-plugins',
           '/usr/lib/docker/cli-plugins',
-        ]
-          .filter((v, n, arr) => arr.indexOf(v) === n)
-          .filter(v => existsSync(v));
+          
+          // win32
+          ...(process.env.USERPROFILE ? [ `${process.env.USERPROFILE}/.docker/cli-plugins` ] : []),
+          ...(process.env.ProgramFiles ? [ `${process.env.ProgramFiles}/Docker/Docker/resources/cli-plugins` ] : []),
+          ...(process.env.ProgramData ? [ `${process.env.ProgramData}/Docker/cli-plugins` ] : []),
+          'C:/Program Files/Docker/Docker/resources/cli-plugins',
+          'C:/ProgramData/Docker/cli-plugins'
+          
+        ].map(str => str.replace(/[\\]/g, '/')));
+        
+        return Promise[cl.allArr](possibleFps[cl.toArr](async fp => {
+          const kids = await rootFact.kid([ fp ]).getKids();
+          return kids[cl.empty]() ? cl.skip : fp;
+        }));
         
       })();
+      logger.log({ dockerPluginDirs });
       
       try {
         
@@ -469,9 +479,7 @@ export class Platformer<LocalData extends Jsfn, LaunchData> extends Flower {
           
           dockerOpsFact.kid([ 'config.json' ]).setData(JSON.stringify({
             
-            auths: {
-              [registryAddr]: { auth: ecrAuth.token }
-            },
+            auths: { [registryAddr]: { auth: ecrAuth.token } },
             ...(dockerPluginDirs.length && { cliPluginsExtraDirs: dockerPluginDirs })
             
           }, null, 2)),
@@ -639,9 +647,10 @@ export class Platformer<LocalData extends Jsfn, LaunchData> extends Flower {
     
   }
   
-  public addPollen(inp?: { mode: 'view' | 'mark' | 'keep', lbd: AnyLambda }) {
+  public addPollen(inp?: { client?: { mode: 'view' | 'mark' | 'keep', lbd: AnyLambda }, undici?: UndiciUtils }) {
     
-    if (inp) this.pistils.push(inp);
+    const { client = null, undici = null } = inp ?? {};
+    if (client) this.pistils.push(client);
     
     return new PollenPlatformer({
       
@@ -650,6 +659,8 @@ export class Platformer<LocalData extends Jsfn, LaunchData> extends Flower {
         rootHost: this.domain.getAddrBase(),
         letsEncrypt: { directory: 'm2', email: 'test@test.com' }
       }} : {}),
+      
+      ...(undici ? { undici } : {}),
       
       garden: this.garden,
       flowerId: this.getFlowerId()
