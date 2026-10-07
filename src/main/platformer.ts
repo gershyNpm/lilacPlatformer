@@ -12,7 +12,7 @@ import slashEscape                                                        from '
 import hash                                                               from '@gershy/util-hash';
 import { getImports, mergeJsImports }                                     from '../util/jsfnImport.ts';
 import { PollenPlatformer, type UndiciUtils }                             from './pollenPlatformer.ts';
-import platformScript                                                     from './platform.ts';
+import platformScript                                                     from './platformScript.ts';
 import type { AnyLambda }                                                 from '@gershy/lilac-lambda';
 import type { Domain }                                                    from '@gershy/lilac-domain';
 import type Logger                                                        from '@gershy/logger';

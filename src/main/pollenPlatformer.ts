@@ -10,8 +10,8 @@ import paging                                                                   
 import Logger                                                                                                                                                          from '@gershy/logger';
 import { crypto as acmeCrypto, Client as AcmeClient, directory as acmeDirectory }                                                                                      from 'acme-client';
 import funnel                                                                                                                                                          from '../util/funnel.ts';
-import { PollenPlatformSession }                                                                                                                                       from './session.ts';
-import type { AdminPlatformFnInp, Cert }                                                                                                                               from './platform.ts';
+import { PollenSession }                                                                                                                                       from './pollenSession.ts';
+import type { AdminPlatformFnInp, Cert }                                                                                                                               from './platformScript.ts';
 import type { Fact }                                                                                                                                                   from '@gershy/disk';
 import type { fetch as undiciFetch, Agent as UndiciAgent, WebSocket as UndiciWebSocket }                                                                               from 'undici';
 
@@ -1046,7 +1046,7 @@ export class PollenPlatformer extends Pollen<PollenPlatformerDef> {
       const { netProc, cert } = await this.platformRegard({ logger, platform });
       logger.log({ $$: 'connection', netProc, cert });
       
-      const platformPollen = new PollenPlatformSession({
+      const platformPollen = new PollenSession({
         flowerId: `domain/${netProc.addr}` as const,
         ...(cert && { cert: { ...cert, undici: this.undici! } }),
       });

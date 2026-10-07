@@ -6,7 +6,7 @@ import type Logger from '@gershy/logger';
 import type { fetch as undiciFetch, Agent as UndiciAgent, WebSocket as UndiciWebSocket } from 'undici';
 import type { UndiciUtils } from './pollenPlatformer.ts';
 
-export class PollenPlatformSession extends Pollen<{ http: PollenHttp; sokt: PollenSokt, userId: string, hear: AsyncGenerator<Json> }> {
+export class PollenSession extends Pollen<{ http: PollenHttp; sokt: PollenSokt, userId: string, hear: AsyncGenerator<Json> }> {
   
   // If a self-signed cert is provided we need undici implementations to handle it!
   protected cert: null | {

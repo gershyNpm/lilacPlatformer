@@ -1,6 +1,6 @@
 {
   "name": "@gershy/lilac-platformer",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "author": "Gershom Maes",
   "description": "TODO",
   "keywords": [
@@ -58,6 +58,10 @@
     ".": {
       "import": "./cmp/esm/main.js",
       "require": "./cmp/cjs/main.js"
+    },
+    "./main/pollenSession": {
+      "import": "./cmp/esm/main/pollenSession.js",
+      "require": "./cmp/cjs/main/pollenSession.js"
     }
   }
 }
